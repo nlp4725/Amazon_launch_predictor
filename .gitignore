@@ -1,0 +1,31 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data
+data/raw/
+data/processed/
+
+# Models & artifacts ignore training runs
+models/ 
+mlruns/
+artifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+.env
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# BUT keep our bundled serving model in the repo
+!src/serving/model/
+!src/serving/model/**
