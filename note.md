@@ -182,13 +182,26 @@ Have finished this step. skip.
 
 ## Step3 Modularize: Notebook to script 
 
-### Data Collection
+Add subfolders
+
+```bash
+mkdir src/{data_collection_pipeline,feature_pipeline}
+mkdir -p src/{training_pipeline,inference_pipeline}
+```
+
+Add __init__.py
+
+```bash
+touch src/__init__.py src/feature_pipeline/__init__.py src/training_pipeline/__init__.py src/inference_pipeline/__init__.py src/data_collection_pipeline/__init__.py tests/__init__.py
+```
+
+### Data_Collection_Pipeline
 
 Raw data was collected from the Keepa API covering newly launched Amazon products between January 2024 and December 2025. The scraper is in `src/data_collection_pipeline/ingest.py`.
 
 **Collection flow (per month):**
 
-| Function | What it does |
+| Main Function | What it does |
 |---|---|
 | `get_or_cache_asins()` | Queries the Keepa product finder with filters (private label sellers only, excludes Amazon) to get ASINs launched that month. Saves results to `asin_list` table — skips the API call if that month is already cached. |
 | `fetch_and_save_products()` | Fetches full product data (title, review count, price, buy box history) for each ASIN in batches of 100. Saves to `products` table with `(asin, month)` as primary key. Only fetches ASINs not already in the database to handle partial runs. |
@@ -202,6 +215,26 @@ Raw data was collected from the Keepa API covering newly launched Amazon product
 asin_list  — (month, asin)
 products   — (asin, month, title, cat, raw_data, buybox, rating)
 ```
+
+**SQLite tables update and save:**
+
+```
+conn.commit() - every month or every 100 asins
+```
+
+### Feature_Pipeline
+
+```bash
+touch touch src/feature_pipeline/load.py
+```
+
+load.py connects to db and load it as a df, returns the df. mean while a local copy .parquet is also saved in data/raw
+
+test_load.py create a fake db and fake path to check 
+
+
+
+
 
 
 
