@@ -149,6 +149,16 @@ Add ignore first
 ```bash
 git add .gitignore
 git commit -m "add .gitignore"
+git add .
+git commit -m "project setup"
+```
+
+Connect to github and force push
+
+```bash
+git remote add origin https://github.com/nlp4725/Amazon_launch_predictor.git
+git push -f origin main
+```
 
 
 
@@ -171,6 +181,29 @@ Generate requrement.txt
 Have finished this step. skip.
 
 ## Step3 Modularize: Notebook to script 
+
+### Data Collection
+
+Raw data was collected from the Keepa API covering newly launched Amazon products between January 2024 and December 2025. The scraper is in `src/data_collection_pipeline/ingest.py`.
+
+**Collection flow (per month):**
+
+| Function | What it does |
+|---|---|
+| `get_or_cache_asins()` | Queries the Keepa product finder with filters (private label sellers only, excludes Amazon) to get ASINs launched that month. Saves results to `asin_list` table — skips the API call if that month is already cached. |
+| `fetch_and_save_products()` | Fetches full product data (title, review count, price, buy box history) for each ASIN in batches of 100. Saves to `products` table with `(asin, month)` as primary key. Only fetches ASINs not already in the database to handle partial runs. |
+| `save_data_to_db()` | Entry point. Creates the two SQLite tables and iterates through each month calling the two functions above. |
+
+**Token management:** Keepa refills at 20 tokens/min. If remaining < 300, waits `(300 - remaining) / 20` mins before the next batch.
+
+**SQLite tables created:**
+
+```
+asin_list  — (month, asin)
+products   — (asin, month, title, cat, raw_data, buybox, rating)
+```
+
+
 
 
 
