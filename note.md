@@ -329,35 +329,35 @@ Run all tests:
 ```bash
 pytest tests/ -v
 ```
-preprocessing: in: df out: df with column extracted and a .parquett file in data/processed add extract information from raw_data columns
+**Critical pattern — `feature_engineering.py` and `test_feature_engineering.py`:** All directory and file paths (`output_dir`, `models_dir`, `emb_path`) must be passed as function parameters with sensible defaults. This lets tests override them with `tmp_path` so no real files in `data/` or `models/` are touched during testing. Never hardcode paths inside functions.
 
-test: create a fake df with fake raw_data json and buy_box json and modify the df and  make sure all columns were added
+---
 
-feature_enginerrig: add embedding and lable data drop na save feature as .parqueet and return x_train, y_train etc
+#### `evaluate.py`
 
-label()                  ← success/failure definition
-filter_review_time()     ← keep >= 180 days
-split()                  ← train/test by date
-encode_categoricals()    ← OHE for cat, seller (fit on train only)
-add_embedding()          ← join 384 emb_ columns
-run_feature_engineering() ← chains all, saves features_train.parquet, features_test.parquet, ohe_encoder.pkl
+Loads the trained model, computes classification metrics on test data, and saves results.
 
+| Function | In | Out |
+|---|---|---|
+| `evaluate(X_test, y_test, model, models_dir, output_dir)` | test features and labels | dict of metrics + `data/processed/evaluation_results.parquet` |
 
-how to save model
+**Key design decisions:**
+- `model=None` by default — if not passed, loads `lgbm_embedding_model.pkl` from `models_dir`. In production this is how it runs. In tests, a dummy trained model is passed directly so no `.pkl` file is needed.
+- Uses `predict_proba` (not `predict`) for ROC-AUC and PR-AUC — these metrics need probabilities, not hard class predictions.
+- Metrics saved as `evaluation_results.parquet` so results are reproducible and can be compared across runs.
+- Returns the metrics dict so callers (tests, `pipeline.py`) can use the values without re-reading the parquet.
+
+**Testing logic (`tests/test_evaluate.py`):**
+- Fixture creates dummy `X_train`, `y_train` (random numpy arrays), trains a real `LGBMClassifier` on them in-memory — no `.pkl` loading needed.
+- Passes the trained model directly to `evaluate()` via `model=` parameter.
+- Passes `output_dir=tmp_path` so parquet saves to a temp folder, not `data/processed/`.
+- Asserts returned dict has the expected keys and all values are between 0 and 1.
 
 ```bash
-from joblib import dump
-dump(preprocessor, Path("models") / "preprocessor.pkl")
+pytest tests/test_evaluate.py -v
 ```
 
-why differenet Path/out_dir/mkdir?
-
-DATA_PATH=Path() fixed path to pass to functon
-out_dir= DATA_PATH (DEFUALT) OR tmp_path for testing
-mkdir() Make sure it is created for the first time
-
-
-
+---
 
 ### Pipeline Data Flow
 
