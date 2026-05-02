@@ -1,0 +1,144 @@
+"""
+Preprocess raw product data into a clean, analysis-ready DataFrame.
+
+- Extracts flat columns (price, seller, title) from raw_data and buybox JSON fields
+- Extracts time-series signals (review history, monthly sold, sales rank) from raw_data
+- Returns a clean DataFrame suitable for EDA or feature engineering
+- Labeling and train/test split are handled in feature_engineering.py
+"""
+
+import json
+from pathlib import Path
+
+import pandas as pd
+
+PROCESSED_DIR = Path("data/processed")
+
+
+# ---------- helpers ----------
+
+def convert_history_to_dict(original_list, list_time):
+    """
+    Convert a Keepa time-series list to a {days_since_launch: value} dictionary.
+
+    In: original_list (List[int]) alternating keepa timestamps and values, list_time (int) listing timestamp
+    Out: dict {days_since_launch: value} or None if original_list is None
+    """
+    if original_list is None:
+        return None
+    times = original_list[0::2]
+    counts = original_list[1::2]
+    days = [int((t - list_time) / 60 / 24) for t in times]
+    return dict(zip(days, counts))
+
+
+def sales_rank_at_months(original_list, starting_days, ending_days, list_time):
+    """
+    Compute average sales rank within a post-launch time window.
+
+    In: original_list (List[int]) raw Keepa sales rank list, starting_days / ending_days (int) window in days, list_time (int) listing timestamp
+    Out: float average sales rank within the window, or None if no data
+    """
+    if original_list is None:
+        return None
+
+    starting_mins = starting_days * 24 * 60 + list_time
+    ending_mins = ending_days * 24 * 60 + list_time
+    times = original_list[0::2]
+    counts = original_list[1::2]
+
+    sum_rank = []
+    for i, k in enumerate(times):
+        if counts[i] and counts[i] != -1:
+            if k >= starting_mins and k <= ending_mins:
+                sum_rank.append(counts[i])
+
+    return sum(sum_rank) / len(sum_rank) if len(sum_rank) != 0 else None
+
+
+def extraction(row):
+    """
+    Extract time-series signals from a single raw_data JSON string.
+
+    In: row (str) a single raw_data JSON string
+    Out: pd.Series with monthly sold, review, and sales rank history columns — joined to df row-wise
+    """
+    data = json.loads(row)
+    list_time = data.get('listedSince')
+
+    time_n_monthly_sold = data.get('monthlySoldHistory')
+    time_n_review_count = data.get('reviews', {}).get('reviewCount')
+    root_cat = data.get('rootCategory')
+    time_n_sales_rank = (data.get('salesRanks') or {}).get(str(root_cat))
+
+    ms_history = convert_history_to_dict(time_n_monthly_sold, list_time)
+    review_history = convert_history_to_dict(time_n_review_count, list_time)
+    sales_rank_history = convert_history_to_dict(time_n_sales_rank, list_time)
+
+    most_recent_review_time = max(review_history.keys()) if review_history else None
+    most_recent_review = review_history[most_recent_review_time] if review_history else None
+
+    if review_history:
+        review_na_count = sum([1 for v in review_history.values() if v == -1])
+    else:
+        review_na_count = None
+
+    return pd.Series({
+        'most_recent_review_time': most_recent_review_time,
+        'most_recent_review': most_recent_review,
+    })
+
+
+# ---------- main functions ----------
+
+def add_price_seller_title(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Extract price, seller, and title from raw_data and buybox JSON fields.
+
+    In: df with raw_data (JSON str) and buybox (JSON str) columns
+    Out: df with new columns — listed_price, price, title, seller
+    """
+    df['listed_price'] = df['raw_data'].map(lambda x: (json.loads(x).get('csv') or [None])[4])
+    df['price'] = df['listed_price'].map(
+        lambda x: None if x is None else (None if x[1] is None else float(x[1] / 100))
+    )
+    df['title'] = df['raw_data'].map(lambda x: json.loads(x).get('title'))
+    df['seller'] = df['buybox'].map(lambda x: (json.loads(x).get('buyBoxSellerIdHistory') or [None])[-1])
+    return df
+
+
+def add_review_n_monthly_sold(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Extract review history, monthly sold, and sales rank signals from raw_data JSON.
+
+    In: df with raw_data (JSON str) column
+    Out: df joined with time-series signal columns from extraction()
+    """
+    return df.join(df['raw_data'].apply(extraction))
+
+
+def run_preprocess(df: pd.DataFrame, output_dir: Path | str = PROCESSED_DIR) -> pd.DataFrame:
+    """
+    Run full preprocessing pipeline and save a parquet checkpoint.
+
+    In: raw df from load_data(), output_dir for saving the parquet
+    Out: clean df with price, seller, title, review history, monthly sold, and sales rank columns
+    """
+    df = add_price_seller_title(df)
+    df = add_review_n_monthly_sold(df)
+
+    outdir = Path(output_dir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    columns_to_drop=['']
+    df.to_parquet(outdir / "preprocessed.parquet", index=False)
+
+    print(f"Preprocessed {df.shape[0]} rows, {df.shape[1]} columns")
+    return df
+
+
+if __name__ == "__main__":
+    df = pd.read_parquet('data/raw/product_launch.parquet')
+    df = run_preprocess(df)
+    print(f"Preprocessed {df.shape[0]} rows, {df.shape[1]} columns")
+
+    
