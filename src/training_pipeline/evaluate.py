@@ -38,10 +38,10 @@ def evaluate(
     Out: dict with roc_auc, pr_auc, precision, recall, f1
     """
     if model is None:
-        model = load(Path(models_dir) / "lgbm_embedding_model.pkl")
+        model = load(Path(models_dir) / "lgbm_tfidf_model.pkl")
 
     y_prob = model.predict_proba(X_test)[:, 1]
-    y_pred = (y_prob >= 0.5).astype(int)
+    y_pred = (y_prob >= 0.6).astype(int)
 
     metrics = {
         "roc_auc": roc_auc_score(y_test, y_prob),

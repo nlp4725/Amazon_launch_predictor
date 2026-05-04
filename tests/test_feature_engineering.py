@@ -10,7 +10,6 @@ import pandas as pd
 import pytest
 
 from src.feature_pipeline.feature_engineering import (
-    add_embedding,
     filter_and_label,
     drop_and_extract_date,
     split,
@@ -29,24 +28,25 @@ def sample_df():
         "seller": ["A123", "B456", "C789"],
         "most_recent_review_time": [200, 100, 250],
         "most_recent_review": [15, 5, 2],
+        "title":'test toys sports'
     })
 
 
-@pytest.fixture
-def fake_emb_path(tmp_path, sample_df):
-    """Save a fake embedding .npy file matching the sample_df row count."""
-    emb = np.random.rand(len(sample_df), 384).astype(np.float32)
-    path = tmp_path / "title_embedding_all.npy"
-    np.save(path, emb)
-    return path
+# @pytest.fixture
+# def fake_emb_path(tmp_path, sample_df):
+#     """Save a fake embedding .npy file matching the sample_df row count."""
+#     emb = np.random.rand(len(sample_df), 384).astype(np.float32)
+#     path = tmp_path / "title_embedding_all.npy"
+#     np.save(path, emb)
+#     return path
 
 
-def test_add_embedding(sample_df, fake_emb_path):
-    """Joins 384 emb_ columns to the DataFrame."""
-    df = add_embedding(sample_df, emb_path=fake_emb_path)
-    assert "emb_0" in df.columns
-    assert "emb_383" in df.columns
-    assert df.shape[1] == sample_df.shape[1] + 384
+# def test_add_embedding(sample_df, fake_emb_path):
+#     """Joins 384 emb_ columns to the DataFrame."""
+#     df = add_embedding(sample_df, emb_path=fake_emb_path)
+#     assert "emb_0" in df.columns
+#     assert "emb_383" in df.columns
+#     assert df.shape[1] == sample_df.shape[1] + 384
 
 
 def test_filter_and_label(sample_df):
@@ -78,10 +78,10 @@ def test_split(sample_df):
     assert len(X_train) + len(X_test) == len(df)
 
 
-def test_fit_and_transform(sample_df, fake_emb_path, tmp_path):
+def test_fit_and_transform(sample_df, tmp_path):
     """Preprocessor fits on train only, transforms test, saves preprocessor.pkl."""
-    df = add_embedding(sample_df, emb_path=fake_emb_path)
-    df = filter_and_label(df)
+    # df = add_embedding(sample_df, emb_path=fake_emb_path)
+    df = filter_and_label(sample_df)
     df = drop_and_extract_date(df)
     X_train, _, X_test, _ = split(df)
 
@@ -94,12 +94,11 @@ def test_fit_and_transform(sample_df, fake_emb_path, tmp_path):
     assert (tmp_path / "preprocessor.pkl").exists()
 
 
-def test_run_feature_engineering(sample_df, fake_emb_path, tmp_path):
+def test_run_feature_engineering(sample_df, tmp_path):
     """Full pipeline saves all four parquet files and returns correct shapes."""
     _, _, _, _ = run_feature_engineering(
         sample_df,
         output_dir=tmp_path,
-        emb_path=fake_emb_path,
         models_dir=tmp_path,
     )
     assert (tmp_path / "features_train.parquet").exists()

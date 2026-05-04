@@ -20,8 +20,8 @@ def training_data():
 
 
 def test_train_saves_model(tmp_path, training_data):
-    """train() fits model and saves lgbm_embedding_model.pkl to models_dir."""
+    """train() fits model and saves lgbm_tfidf_model.pkl to models_dir."""
     X_train, y_train = training_data
     model = train(X_train, y_train, models_dir=tmp_path)
-    assert (tmp_path / "lgbm_embedding_model.pkl").exists()
+    assert (tmp_path / "lgbm_tfidf_model.pkl").exists()
     assert model is not None

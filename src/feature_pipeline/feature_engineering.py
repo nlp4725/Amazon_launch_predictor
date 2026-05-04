@@ -1,10 +1,10 @@
 """
-Feature engineering: label, filter, split, encode, and join embeddings.
+Feature engineering: label, filter, split, encode, and vectorize titles with TF-IDF.
 
-- Joins title embeddings first to preserve index alignment with the full dataset
 - Filters to ASINs with at least 180 days of review data and creates binary label
 - Splits into train/test by date (train < 2025-06-01, test >= 2025-06-01)
 - Fits ColumnTransformer on train only and applies to test (prevents leakage)
+- Title column is vectorized with TfidfVectorizer — no sentence-transformer or GPU needed
 - Saves features_train.parquet, features_test.parquet, y_train.parquet, y_test.parquet, and preprocessor.pkl
 """
 
@@ -14,30 +14,16 @@ import numpy as np
 import pandas as pd
 from joblib import dump
 from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 PROCESSED_DIR = Path("data/processed")
 MODELS_DIR = Path("models")
-EMB_PATH = Path("data/raw/title_embedding_all.npy")
 
 
 # ---------- main functions ----------
-
-def add_embedding(df: pd.DataFrame, emb_path: Path | str = EMB_PATH) -> pd.DataFrame:
-    """
-    Load title embeddings from .npy and join as 384 emb_ columns.
-    Must run before any row filtering to keep index aligned with the embedding array.
-
-    In: full preprocessed df, path to title_embedding_all.npy
-    Out: df with emb_0 ... emb_383 columns joined
-    """
-    embeddings = np.load(emb_path)
-    em_cols = [f'emb_{i}' for i in range(384)]
-    df_embedding = pd.DataFrame(embeddings, index=df.index, columns=em_cols)
-    return df.join(df_embedding)
-
 
 def filter_and_label(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -56,10 +42,9 @@ def drop_and_extract_date(df: pd.DataFrame) -> pd.DataFrame:
     Select model features, drop rows missing seller, and extract year/month from date.
 
     In: labeled df
-    Out: df with columns [month, year, date, cat, price, seller, emb_*, label]
+    Out: df with columns [month, year, date, cat, price, seller, title, label]
     """
-    em_cols = [c for c in df.columns if c.startswith('emb_')]
-    df = df[['month', 'cat', 'price', 'seller', 'label'] + em_cols].copy()
+    df = df[['month', 'cat', 'price', 'seller', 'label', 'title']].copy()
     df = df.dropna(subset=['seller'])
     df['date'] = df['month']
     df['year'] = df['date'].dt.year
@@ -94,16 +79,15 @@ def fit_and_transform(X_train: pd.DataFrame, X_test: pd.DataFrame, models_dir: P
     In: X_train, X_test DataFrames, models_dir for saving preprocessor.pkl
     Out: X_train_transformed (np.array), X_test_transformed (np.array)
     """
-    em_cols = [c for c in X_train.columns if c.startswith('emb_')]
-
     cat_transformer = Pipeline([
         ('impute', SimpleImputer(strategy='constant', fill_value='unknown')),
         ('encoder', OneHotEncoder(handle_unknown='ignore')),
     ])
 
     preprocessor = ColumnTransformer([
-        ('numeric', SimpleImputer(strategy='median'), ['price', 'month', 'year'] + em_cols),
+        ('numeric', SimpleImputer(strategy='median'), ['price', 'month', 'year']),
         ('cat', cat_transformer, ['cat', 'seller']),
+        ('tfidf', TfidfVectorizer(max_features=200, stop_words='english'), 'title'),
     ])
 
     X_train_transformed = preprocessor.fit_transform(X_train)
@@ -117,18 +101,17 @@ def fit_and_transform(X_train: pd.DataFrame, X_test: pd.DataFrame, models_dir: P
     return X_train_transformed, X_test_transformed
 
 
-def run_feature_engineering(df: pd.DataFrame, emb_path: Path | str = EMB_PATH, output_dir: Path | str = PROCESSED_DIR, models_dir: Path | str = MODELS_DIR) -> tuple:
+def run_feature_engineering(df: pd.DataFrame, output_dir: Path | str = PROCESSED_DIR, models_dir: Path | str = MODELS_DIR) -> tuple:
     """
     Run full feature engineering pipeline and save outputs to disk.
 
     In: clean df from run_preprocess()
     Out: X_train, y_train, X_test, y_test as numpy arrays
     """
-    df = add_embedding(df,emb_path)
     df = filter_and_label(df)
     df = drop_and_extract_date(df)
     X_train, y_train, X_test, y_test = split(df)
-    X_train_transformed, X_test_transformed = fit_and_transform(X_train, X_test,models_dir)
+    X_train_transformed, X_test_transformed = fit_and_transform(X_train, X_test, models_dir)
 
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)

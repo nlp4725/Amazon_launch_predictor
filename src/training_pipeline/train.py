@@ -32,8 +32,8 @@ def train(
 
     outdir = Path(models_dir)
     outdir.mkdir(parents=True, exist_ok=True)
-    dump(model, outdir / "lgbm_embedding_model.pkl")
-    print(f"Model saved to {outdir / 'lgbm_embedding_model.pkl'}")
+    dump(model, outdir / "lgbm_tfidf_model.pkl")
+    print(f"Model saved to {outdir / 'lgbm_tfidf_model.pkl'}")
 
     return model
 

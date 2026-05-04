@@ -291,32 +291,31 @@ pytest tests/test_preprocessing.py -v
 
 #### `feature_engineering.py`
 
-Prepares the clean DataFrame for model training. Joins embeddings first (before row filtering) to preserve index alignment, then filters, labels, splits, and encodes.
+Prepares the clean DataFrame for model training. Filters, labels, splits, and encodes. Title text is vectorized with TF-IDF — no sentence-transformer or GPU required.
 
-**Pipeline order matters:**
+**Pipeline order:**
 ```
-add_embedding()         ← must run first — index must align with full dataset
 filter_and_label()      ← filter rows, create label
 drop_and_extract_date() ← select columns, extract month/year
 split()                 ← time-based train/test split
-fit_and_transform()     ← fit OHE on train only, apply to test
+fit_and_transform()     ← fit OHE + TF-IDF on train only, apply to test
 ```
 
 | Function | In | Out |
 |---|---|---|
-| `add_embedding(df, emb_path)` | full preprocessed df | df + 384 `emb_*` columns |
 | `filter_and_label(df)` | df with `most_recent_review_time`, `most_recent_review` | filtered df + `label` column (1 = >10 reviews, 0 = failure) |
-| `drop_and_extract_date(df)` | labeled df | df with selected columns + `month` (int), `year`, `date` |
+| `drop_and_extract_date(df)` | labeled df | df with selected columns + `month` (int), `year`, `date`, `title` |
 | `split(df)` | df with `date` and `label` | `X_train`, `y_train`, `X_test`, `y_test` |
 | `fit_and_transform(X_train, X_test, models_dir)` | train/test DataFrames | transformed np.arrays + `models/preprocessor.pkl` |
 | `run_feature_engineering(df, output_dir)` | clean df from `run_preprocess()` | `features_train.parquet`, `features_test.parquet`, `y_train.parquet`, `y_test.parquet` |
 
 **Key design decisions:**
 - `fit_transform()` on train, `.transform()` only on test — prevents data leakage
-- `preprocessor.pkl` saved to `models/` so inference can apply the same transformations to new data without refitting
+- `TfidfVectorizer(max_features=200)` replaces sentence embeddings — lightweight, no torch/GPU needed
+- `preprocessor.pkl` saved to `models/` so inference applies the same transformations to new data without refitting
 
 **Testing logic (`tests/test_feature_engineering.py`):**
-- `fake_emb_path` fixture generates a random `.npy` file matching the sample df row count — no real embeddings needed
+- `sample_df` fixture includes a `title` column with fake product title strings
 - Each function tested independently with small fake DataFrames
 - `test_fit_and_transform` skips gracefully if fixture doesn't produce both train and test rows
 - `test_run_feature_engineering` checks all four parquet files are saved to `tmp_path`
@@ -386,7 +385,7 @@ pytest tests/test_evaluate.py -v
 │                          ▼                                  │
 │  feature_engineering.py                                     │
 │  preprocessed.parquet ───────► features_train.parquet  ┐    │
-│  title_embedding_all.npy       features_test.parquet   ├── data/processed/
+│  (title → TF-IDF)              features_test.parquet   ├── data/processed/
 │                                y_train.parquet         │    │
 │                                y_test.parquet          ┘    │
 │                                preprocessor.pkl ─────────── models/
