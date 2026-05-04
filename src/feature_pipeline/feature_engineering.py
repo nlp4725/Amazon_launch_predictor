@@ -113,6 +113,11 @@ def run_feature_engineering(df: pd.DataFrame, output_dir: Path | str = PROCESSED
     X_train, y_train, X_test, y_test = split(df)
     X_train_transformed, X_test_transformed = fit_and_transform(X_train, X_test, models_dir)
 
+    # TfidfVectorizer returns a sparse matrix — convert to dense before saving to parquet
+    if hasattr(X_train_transformed, 'toarray'):
+        X_train_transformed = X_train_transformed.toarray()
+        X_test_transformed = X_test_transformed.toarray()
+
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(X_train_transformed).to_parquet(outdir / "features_train.parquet", index=False)

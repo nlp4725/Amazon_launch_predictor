@@ -129,7 +129,6 @@ def run_preprocess(df: pd.DataFrame, output_dir: Path | str = PROCESSED_DIR) -> 
 
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
-    columns_to_drop=['']
     df.to_parquet(outdir / "preprocessed.parquet", index=False)
 
     print(f"Preprocessed {df.shape[0]} rows, {df.shape[1]} columns")
