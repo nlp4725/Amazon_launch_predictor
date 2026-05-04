@@ -126,3 +126,8 @@ def test_predict_from_asin_returns_all_keys(fitted_models):
     assert "title" in result
     assert "predicted_probability" in result
     assert "predicted_label" in result
+
+
+
+
+

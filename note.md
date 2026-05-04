@@ -332,6 +332,160 @@ pytest tests/ -v
 
 ---
 
+### Training_Pipeline
+
+```bash
+touch src/training_pipeline/train.py src/training_pipeline/evaluate.py
+```
+
+---
+
+#### `train.py`
+
+Fits `LGBMClassifier` on the encoded training features and saves the model to disk.
+
+| Function | In | Out |
+|---|---|---|
+| `train(X_train, y_train, models_dir)` | encoded np.array features and binary labels | fitted model + `models/lgbm_tfidf_model.pkl` |
+
+**Key design decisions:**
+- `class_weight='balanced'` — dataset has ~12% success rate, this prevents the model from predicting failure for everything
+- Returns the fitted model so `pipeline.py` can pass it directly to `evaluate()` without reloading from disk
+
+**Testing logic (`tests/test_train.py`):**
+- Random numpy arrays as `X_train`, `y_train` — no real data needed since the model just needs valid input shapes
+- Asserts model is returned and `.pkl` file is saved to `tmp_path`
+
+```bash
+pytest tests/test_train.py -v
+```
+
+---
+
+#### `evaluate.py`
+
+Loads the trained model, computes classification metrics on test data, and saves results.
+
+| Function | In | Out |
+|---|---|---|
+| `evaluate(X_test, y_test, model, models_dir, output_dir)` | test features and labels | dict of metrics + `data/processed/evaluation_results.parquet` |
+
+**Key design decisions:**
+- `model=None` by default — if not passed, loads `lgbm_tfidf_model.pkl` from `models_dir`. In tests, a dummy trained model is passed directly so no `.pkl` file is needed.
+- Uses `predict_proba` (not `predict`) for ROC-AUC and PR-AUC — these metrics need probabilities, not hard class predictions.
+- Metrics saved as `evaluation_results.parquet` so results are reproducible and can be compared across runs.
+- Returns the metrics dict so callers (tests, `pipeline.py`) can use the values without re-reading the parquet.
+
+**Testing logic (`tests/test_evaluate.py`):**
+- Fixture trains a real `LGBMClassifier` on random data in-memory — no `.pkl` loading needed.
+- Passes the trained model directly to `evaluate()` via `model=` parameter.
+- Passes `output_dir=tmp_path` so parquet saves to a temp folder, not `data/processed/`.
+- Asserts returned dict has the expected keys and all values are between 0 and 1.
+
+```bash
+pytest tests/test_evaluate.py -v
+```
+
+---
+
+### Inference_Pipeline
+
+```bash
+touch src/inference_pipeline/inference.py
+```
+
+---
+
+#### `inference.py`
+
+Takes a new product's ASIN or Amazon URL, fetches product data from Keepa, and returns a launch success prediction.
+
+| Function | In | Out |
+|---|---|---|
+| `fetch_product_from_keepa(asin)` | ASIN string | dict with `title`, `price`, `cat`, `seller` |
+| `predict(title, price, cat, seller, models_dir)` | product fields | dict with `predicted_probability`, `predicted_label` |
+| `predict_from_asin(asin, models_dir)` | ASIN string | product fields + `predicted_probability`, `predicted_label` |
+
+**Key design decisions:**
+- `seller` defaults to `"unknown"` for manual input — OHE was fitted with `handle_unknown='ignore'` so unseen sellers encode as all zeros
+- `model=None` pattern — model is passed directly in tests to avoid loading `.pkl` from disk
+- `{**product, **result}` merges product info and prediction into one response dict
+
+**Testing logic (`tests/test_inference.py`):**
+- `fitted_models` fixture builds a minimal preprocessor and model saved to `tmp_path` — no real `.pkl` files needed
+- `fetch_product_from_keepa` tested by mocking `requests.get` — no real Keepa API calls made
+- `predict_from_asin` tested by mocking `fetch_product_from_keepa` — isolates prediction logic from HTTP calls
+
+```bash
+pytest tests/test_inference.py -v
+```
+
+---
+
+### `pipeline.py`
+
+Chains all pipeline steps end to end. Run this to retrain the model from scratch.
+
+```
+load → preprocess → feature_engineering → train → evaluate
+```
+
+**Skip logic:** If `product_launch.parquet` or `preprocessed.parquet` already exist, those steps are skipped — avoids slow SQLite and JSON parsing on re-runs.
+
+```bash
+python pipeline.py
+```
+
+---
+
+### `main.py`
+
+FastAPI app — exposes inference as HTTP endpoints. Users input an ASIN or Amazon URL and get back product information plus a launch success prediction.
+
+**User flow:**
+```
+User pastes ASIN or Amazon URL
+        ↓
+main.py checks Keepa token balance (raises 503 if < 10 tokens)
+        ↓
+inference.py fetches title, price, cat, seller from Keepa
+        ↓
+preprocessor.pkl transforms the input row
+        ↓
+lgbm_tfidf_model.pkl predicts probability
+        ↓
+Returns: title, price, cat, seller, predicted_probability, predicted_label
+```
+
+| Endpoint | Input | Output |
+|---|---|---|
+| `GET /` | — | health check message |
+| `POST /predict/asin` | `asin: str` | product info + prediction |
+| `POST /predict/url` | `url_str: str` | parses ASIN from URL, product info + prediction |
+
+**URL parsing:** strips `https://` then splits by `/` — ASIN is always at position [3] after the protocol is removed.
+
+**Token check:** Keepa refills at 20 tokens/min. If < 10 tokens, returns HTTP 503 so the user knows to retry later rather than hanging.
+
+**How to test locally:**
+
+1. Start the server:
+```bash
+uvicorn main:app --reload
+```
+
+2. Open `http://localhost:8000/docs` in your browser.
+
+3. Click on an endpoint (e.g. `POST /predict/asin`), click **Try it out**, enter your input, click **Execute**.
+
+4. The response appears below with the prediction result.
+
+`--reload` restarts the server automatically every time you save `main.py` — no need to restart manually during development.
+
+Note: typing the URL directly in the browser sends a GET request — endpoints defined as `POST` will return `{"detail": "Method Not Allowed"}`. Always use `/docs` to test POST endpoints.
+
+---
+
 #### `evaluate.py`
 
 Loads the trained model, computes classification metrics on test data, and saves results.

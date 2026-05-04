@@ -92,7 +92,7 @@ def fetch_product_from_keepa(asin: str) -> dict:
     # buyBoxSellerIdHistory[-1] is the most recent buy box seller
     seller = (product.get("buyBoxSellerIdHistory") or [None])[-1]
 
-    return {"title": title, "price": price, "cat": cat, "seller": seller}
+    return {"asin": asin, "title": title, "price": price, "cat": cat, "seller": seller}
 
 
 def predict_from_asin(asin: str, models_dir: Path | str = MODELS_DIR) -> dict:
