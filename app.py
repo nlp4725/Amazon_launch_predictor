@@ -8,10 +8,12 @@ Requires FastAPI server running at localhost:8000:
     uvicorn main:app --reload
 """
 
+import os
+
 import requests
 import streamlit as st
 
-API_URL = "http://localhost:8000"
+API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 st.title("Amazon Launch Predictor")
 st.write("Enter an ASIN or Amazon product URL to predict launch success.")

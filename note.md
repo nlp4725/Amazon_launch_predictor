@@ -622,6 +622,36 @@ if clear_clicked:
 
 ## Step 4: Deployment (Google Cloud Run)
 
+### What is Google Cloud Run?
+
+Cloud Run is a **serverless** platform for running containers. You give it a Docker image, it runs it, and you don't manage any servers.
+
+**Auto-scaling:** When traffic increases, Cloud Run spins up more containers automatically. Each container handles up to ~80 concurrent requests (free tier default, configurable higher on paid tiers). When traffic drops to zero, all containers shut down — you pay nothing while idle.
+
+**Free tier resources per container:**
+- Memory: 512 MB
+- CPU: 1 vCPU
+
+**How billing works (free tier limits per month):**
+| Metric | What it means | Free tier limit |
+|--------|--------------|-----------------|
+| GB-seconds | memory used (GB) × how long it ran (seconds) | 360,000 GB-seconds |
+| vCPU-seconds | CPU cores used × how long it ran (seconds) | 180,000 vCPU-seconds |
+
+**How long does the free tier last if the app ran 24/7?**
+
+At 512 MB (0.5 GB) and 1 vCPU continuously:
+- vCPU: 86,400 seconds/day → 180,000 ÷ 86,400 = **~2 days** before hitting the vCPU limit
+- Memory: 0.5 GB × 86,400 = 43,200 GB-seconds/day → 360,000 ÷ 43,200 = **~8.3 days** before hitting the memory limit
+- vCPU runs out first — so the free tier covers ~2 days of 24/7 continuous running
+
+**In practice:** Cloud Run scales to zero between requests — the container only runs while handling a request. For a small app with occasional traffic, the free tier comfortably covers months of usage.
+
+**Good for:** Small apps, demos, ML inference APIs with unpredictable or low traffic.
+**Not ideal for:** Apps that need a persistent static IP, WebSockets, or very long-running jobs (container timeout is 60 minutes max).
+
+---
+
 ### `requirements.txt`
 
 Generate from code imports only — cleaner than `pip freeze` which dumps everything in the environment:
@@ -675,39 +705,77 @@ gcloud config set project amazon-launch  # tells gcloud which project to use for
 
 **Step 3 — Enable required services:**
 ```bash
-gcloud services enable run.googleapis.com containerregistry.googleapis.com cloudbuild.googleapis.com
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
 ```
 - `run.googleapis.com` — Cloud Run — runs your container and serves it publicly
-- `containerregistry.googleapis.com` — Container Registry — stores your Docker images
+- `artifactregistry.googleapis.com` — Artifact Registry — stores your Docker images (replaces old `gcr.io`)
 - `cloudbuild.googleapis.com` — Cloud Build — builds your Docker image from source code
 
-All three are needed:
 ```
-Cloud Build → builds the image → Container Registry stores it → Cloud Run serves it
+Cloud Build → builds the image → Artifact Registry stores it → Cloud Run serves it
 ```
 
-**Step 3b — Grant Cloud Build storage access:**
+**Step 3b — Grant required permissions:**
+
+Google Cloud starts with zero permissions per project. These are needed once per project. Replace `{PROJECT_NUMBER}` with your actual project number (run `gcloud projects describe amazon-launch` to find it).
+
+| Permission | Service Account | Why needed |
+|---|---|---|
+| `roles/storage.admin` | `{PROJECT_NUMBER}-compute@developer.gserviceaccount.com` | Cloud Build reads/writes build files to Cloud Storage |
+| `roles/artifactregistry.admin` | `{PROJECT_NUMBER}-compute@developer.gserviceaccount.com` | Push Docker images to Artifact Registry |
+| `roles/logging.logWriter` | `{PROJECT_NUMBER}-compute@developer.gserviceaccount.com` | Write build logs so you can see what happened |
+| `roles/logging.logWriter` | `{PROJECT_NUMBER}@cloudbuild.gserviceaccount.com` | Cloud Build service account also needs log access |
+
 ```bash
 gcloud projects add-iam-policy-binding amazon-launch \
   --member="serviceAccount:{PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
   --role="roles/storage.admin"
+
+gcloud projects add-iam-policy-binding amazon-launch \
+  --member="serviceAccount:{PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/artifactregistry.admin"
+
+gcloud projects add-iam-policy-binding amazon-launch \
+  --member="serviceAccount:{PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
+
+gcloud projects add-iam-policy-binding amazon-launch \
+  --member="serviceAccount:{PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/logging.logWriter"
 ```
-Cloud Build needs permission to read/write to Google Cloud Storage to store build artifacts. Replace `{PROJECT_NUMBER}` with your actual project number (find it in `console.cloud.google.com` → project settings, or run `gcloud projects describe amazon-launch`).
+
+**Step 3c — Create Artifact Registry repository:** 
+
+Artifact Registry is Google Cloud's storage for Docker images. Before Cloud Build can push your image anywhere, the destination folder (repository) must exist. Think of it like creating an S3 bucket before uploading files — the bucket has to exist first or the upload fails.
+
+`amazon-predictor` is the repository name (the folder). Your image will be stored at:
+```
+us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app
+ └─ region           └─ project id   └─ this repo   └─ image name
+```
+
+```bash
+gcloud artifacts repositories create amazon-predictor \
+  --repository-format=docker \
+  --location=us-central1
+```
 
 **Step 4 — Build and push Docker image:**
 ```bash
-gcloud builds submit --tag gcr.io/amazon-launch/amazon-predictor
+gcloud builds submit --tag us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app
 ```
-Sends your project to Google Cloud Build, builds the Docker image there, and stores it in Container Registry. No need to build locally.
+Sends your project to Google Cloud Build, builds the Docker image, and stores it in Artifact Registry.
 
-The tag format is `gcr.io/{project-id}/{image-name}`:
+The tag format is `{region}-docker.pkg.dev/{project-id}/{repository-name}/{image-name}`:
+- `us-central1` — region where your Artifact Registry repository lives
 - `amazon-launch` — your Google Cloud project ID
-- `amazon-predictor` — the name you give the image (you choose this, doesn't have to match project ID)
+- `amazon-predictor` — the repository you created in Step 3c
+- `app` — the image name
 
 **Step 5 — Deploy FastAPI backend:**
 ```bash
 gcloud run deploy amazon-predictor-api \
-  --image gcr.io/amazon-launch/amazon-predictor \
+  --image us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app \
   --platform managed \
   --allow-unauthenticated \
   --port 8000
@@ -716,7 +784,7 @@ gcloud run deploy amazon-predictor-api \
 **Step 6 — Deploy Streamlit frontend:**
 ```bash
 gcloud run deploy amazon-predictor-ui \
-  --image gcr.io/amazon-launch/amazon-predictor \
+  --image us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app \
   --platform managed \
   --allow-unauthenticated \
   --port 8501
@@ -728,6 +796,226 @@ Each deploy gives you a public URL like `https://amazon-predictor-api-xyz.run.ap
 - No server to manage — scales to zero when not in use (no idle charges)
 - One command to deploy — no SSH, no security groups, no OS updates
 - Free tier: 2 million requests/month
+
+---
+
+### Option 2: Two Containers (FastAPI + Streamlit separately)
+
+**Why two containers:**
+Cloud Run only exposes one port per service. With a single container running both FastAPI and Streamlit, only one port is reachable from outside — so FastAPI is locked inside the container and can never be called directly. Two containers means:
+- Streamlit is publicly accessible at its own URL (port 8501)
+- FastAPI is publicly accessible at its own URL (port 8000) — other clients (mobile apps, scripts) can call it directly
+- Each service scales independently
+
+**What changes from Option 1:**
+
+| | Option 1 (single container) | Option 2 (two containers) |
+|--|--|--|
+| Dockerfiles | 1 (`Dockerfile`) | 2 (`Dockerfile.fastapi`, `Dockerfile.streamlit`) |
+| Docker images | 1 (`app:latest`) | 2 (`app:fastapi`, `app:streamlit`) |
+| Cloud Run services | 1 | 2 (`fastapi-service`, `streamlit-service`) |
+| FastAPI reachable externally | No | Yes |
+| `app.py` API_URL | `localhost:8000` | env var from Cloud Run |
+
+**We also chose Terraform + Cloud Build for CI/CD** to skip manually granting permissions and manually running deploy commands every time code changes.
+
+---
+
+### Files for Option 2
+
+**`Dockerfile.fastapi`**
+Runs only the FastAPI backend. Single responsibility — no Streamlit process, lighter container.
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt   # --no-cache-dir: don't save downloaded packages to disk after installing — pip normally caches them for re-use but inside a Docker image that cache is wasted space since you'll never reinstall
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# CMD is the command that runs when the container starts — equivalent to typing this in the terminal:
+#   uvicorn main:app --host 0.0.0.0 --port 8000
+# Written as a JSON array so each argument is a separate element (no shell parsing, safer)
+# Only one CMD per Dockerfile — if you write two, the last one wins
+```
+
+**`Dockerfile.streamlit`**
+Runs only the Streamlit frontend. Single responsibility — no FastAPI process.
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8501
+CMD ["streamlit", "run", "app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+# CMD runs when the container starts — equivalent to: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+```
+
+**`app.py` change**
+`API_URL` now reads from an environment variable instead of hardcoded localhost. Cloud Run injects the FastAPI URL at deploy time — no rebuild needed if the URL changes.
+```python
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+```
+- In production: Cloud Run sets `API_URL=https://fastapi-service-xxx-uc.a.run.app`
+- Locally: falls back to `localhost:8000` (default still works)
+
+---
+
+### `terraform/main.tf`
+
+Terraform creates all the infrastructure once. Instead of running `gcloud` commands manually and granting permissions one by one, Terraform declares the desired state and applies it all at once. Reusable for future projects by changing the variables.
+
+---
+
+**What Terraform covers:**
+| What | Why |
+|------|-----|
+| Artifact Registry repository | Storage for Docker images |
+| Cloud Build service account permissions | So Cloud Build can push images and write logs |
+| Compute Engine service account permissions | So Cloud Run can pull images |
+| FastAPI Cloud Run service | Runs the backend on port 8000 |
+| Streamlit Cloud Run service | Runs the frontend on port 8501 |
+| Public access (allUsers invoker) | So anyone can reach both services |
+| Wiring `API_URL` env var | Passes FastAPI URL to Streamlit automatically |
+
+**What Terraform does NOT cover:**
+| What | Why |
+|------|-----|
+| Building Docker images | Terraform manages cloud resources, not code |
+| Pushing Docker images to Artifact Registry | Same — that's Cloud Build's job |
+| Enabling Google Cloud APIs | ✅ Now covered — `google_project_service` in `main.tf` |
+| Authenticating with Google Cloud | `gcloud auth login` must be done manually |
+| Cloud Build trigger (GitHub → Cloud Build) | Requires OAuth to connect GitHub — done once in Google Cloud Console |
+
+---
+
+**The bootstrap problem:** Terraform itself needs permission to create resources. Since you are the project owner, you already have full access — so running `terraform apply` works without any extra setup. This is the one manual step that can never be automated away.
+
+---
+
+**Full order of commands (first time setup):**
+
+```bash
+# 1. One-time manual steps (cannot be automated)
+gcloud auth login                              # proves who you are
+gcloud config set project amazon-launch        # sets active project
+
+# 2. Install Terraform and initialize (one time)
+brew install terraform
+cd terraform
+terraform init
+
+# 3. Run Terraform — creates repo, permissions, Cloud Run services
+# If repo already exists from manual setup, import it first:
+terraform import google_artifact_registry_repository.repo projects/amazon-launch/locations/us-central1/repositories/amazon-predictor
+terraform apply
+
+# 4. Build and push Docker images (Terraform cannot do this)
+cd ..
+gcloud builds submit --config cloudbuild.fastapi.yaml .
+gcloud builds submit --config cloudbuild.streamlit.yaml .
+
+# 5. Run Terraform again — updates Cloud Run services with the real images
+cd terraform
+terraform apply
+
+# 6. Set up Cloud Build trigger — connects GitHub to Cloud Build (done once in Google Cloud Console, not Terraform)
+# Go to: Google Cloud Console → Cloud Build → Triggers → Connect Repository
+# Set: branch = main, config = cloudbuild.yaml
+# After this, every git push to main automatically runs cloudbuild.yaml
+```
+
+**After first-time setup — every code change:**
+```bash
+git push origin main   # Cloud Build trigger automatically builds, pushes, and deploys
+```
+
+---
+
+What it creates:
+1. **Artifact Registry repository** — storage for Docker images
+2. **FastAPI Cloud Run service** — runs the backend container on port 8000
+3. **Streamlit Cloud Run service** — runs the frontend container on port 8501, automatically injects FastAPI URL as `API_URL` env var
+4. **IAM public access** — `allUsers` invoker role on both services so anyone can reach them
+
+**How `API_URL` is passed — Terraform:**
+
+Terraform creates FastAPI first, then reads its URL directly from the resource and injects it into Streamlit's env var:
+```hcl
+env {
+  name  = "API_URL"
+  value = google_cloud_run_v2_service.fastapi.uri  # Terraform fills this in automatically after creating FastAPI
+}
+```
+`uri` is the public URL Cloud Run assigns to the service (e.g. `https://fastapi-service-abc123-uc.a.run.app`). Terraform figures out the creation order itself — it sees that Streamlit references FastAPI's uri, so it knows to create FastAPI first.
+
+**How `API_URL` is passed — Cloud Build:**
+
+Cloud Build has no state — it doesn't know the FastAPI URL ahead of time. So it fetches it at runtime using bash before deploying Streamlit:
+```bash
+FASTAPI_URL=$(gcloud run services describe fastapi-service --region=us-central1 --format="value(status.url)")
+gcloud run deploy streamlit-service --set-env-vars=API_URL=$FASTAPI_URL
+```
+Step by step:
+1. Ask Google Cloud "what is the FastAPI service URL?" → store in `$FASTAPI_URL`
+2. Pass it to the Streamlit deploy command as an env var
+
+**How `API_URL` is used in `app.py`:**
+```python
+API_URL = os.getenv("API_URL", "http://localhost:8000")
+```
+- In production: Cloud Run injects `API_URL=https://fastapi-service-xxx-uc.a.run.app` → Streamlit calls FastAPI at that URL
+- Locally: env var not set → falls back to `localhost:8000` → still works for local development
+
+To run (once):
+```bash
+brew install terraform
+cd terraform
+terraform init    # downloads Google Cloud provider
+terraform plan    # shows what will be created (dry run)
+terraform apply   # creates everything
+```
+
+---
+
+### `cloudbuild.yaml`
+
+Runs automatically on every `git push` to main. Replaces manually running `gcloud builds submit` and `gcloud run deploy` after every code change.
+
+Steps in order:
+1. **Build `app:fastapi`** — `docker build -f Dockerfile.fastapi`
+2. **Build `app:streamlit`** — `docker build -f Dockerfile.streamlit`
+3. **Push `app:fastapi`** — upload to Artifact Registry
+4. **Push `app:streamlit`** — upload to Artifact Registry
+5. **Deploy `fastapi-service`** — Cloud Run pulls new `app:fastapi` image
+6. **Deploy `streamlit-service`** — fetches FastAPI URL first with `gcloud run services describe`, then deploys with `API_URL` env var set
+
+Step 6 uses `bash` entrypoint (not plain args) because it needs to run a shell command to get the FastAPI URL before passing it to the deploy command:
+```yaml
+entrypoint: 'bash'
+args:
+  - '-c'
+  - |
+    FASTAPI_URL=$(gcloud run services describe fastapi-service ...)
+    gcloud run deploy streamlit-service --set-env-vars=API_URL=$FASTAPI_URL
+```
+
+**Full CI/CD flow on every `git push`:**
+```
+git push origin main
+      ↓
+Cloud Build trigger fires (set up once in Google Cloud Console)
+      ↓
+builds app:fastapi + app:streamlit
+      ↓
+pushes both to Artifact Registry
+      ↓
+deploys fastapi-service + streamlit-service to Cloud Run
+```
+
+**Why Cloud Build over GitHub Actions:**
+Cloud Build runs inside Google Cloud — it already has access to your project, Artifact Registry, and Cloud Run without extra credential setup. GitHub Actions would need service account keys exported and stored as GitHub secrets.
 
 
 

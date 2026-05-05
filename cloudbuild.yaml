@@ -1,0 +1,48 @@
+steps:
+  # Build FastAPI image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.fastapi', '-t',
+           'us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:fastapi', '.']
+
+  # Build Streamlit image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-f', 'Dockerfile.streamlit', '-t',
+           'us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:streamlit', '.']
+
+  # Push FastAPI image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:fastapi']
+
+  # Push Streamlit image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:streamlit']
+
+  # Deploy FastAPI to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    args:
+      - 'gcloud'
+      - 'run'
+      - 'deploy'
+      - 'fastapi-service'
+      - '--image=us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:fastapi'
+      - '--region=us-central1'
+      - '--platform=managed'
+      - '--port=8000'
+      - '--memory=512Mi'
+      - '--allow-unauthenticated'
+
+  # Deploy Streamlit to Cloud Run — fetch FastAPI URL first then pass as env var
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        FASTAPI_URL=$(gcloud run services describe fastapi-service --region=us-central1 --format="value(status.url)")
+        gcloud run deploy streamlit-service \
+          --image=us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:streamlit \
+          --region=us-central1 \
+          --platform=managed \
+          --port=8501 \
+          --memory=512Mi \
+          --allow-unauthenticated \
+          --set-env-vars=API_URL=$FASTAPI_URL
