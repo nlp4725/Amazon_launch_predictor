@@ -26,6 +26,11 @@ build/
 # OS
 .DS_Store
 
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+
 # BUT keep our bundled serving model in the repo
 !src/serving/model/
 !src/serving/model/**
