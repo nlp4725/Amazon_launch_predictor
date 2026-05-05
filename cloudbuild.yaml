@@ -40,7 +40,7 @@ steps:
     args:
       - '-c'
       - |
-        FASTAPI_URL=$(gcloud run services describe fastapi-service --region=us-central1 --format="value(status.url)")
+        FASTAPI_URL=$$(gcloud run services describe fastapi-service --region=us-central1 --format="value(status.url)")
         gcloud run deploy streamlit-service \
           --image=us-central1-docker.pkg.dev/amazon-launch/amazon-predictor/app:streamlit \
           --region=us-central1 \
@@ -48,4 +48,4 @@ steps:
           --port=8501 \
           --memory=512Mi \
           --allow-unauthenticated \
-          --set-env-vars=API_URL=$FASTAPI_URL
+          --set-env-vars=API_URL=$$FASTAPI_URL
