@@ -21,7 +21,7 @@ from sklearn.metrics import (
 )
 
 PROCESSED_DIR = Path("data/processed")
-MODELS_DIR = Path("models")
+MODELS_DIR = Path("src/serving/model")
 
 
 def evaluate(

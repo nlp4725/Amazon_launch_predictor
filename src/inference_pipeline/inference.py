@@ -20,7 +20,7 @@ from joblib import load
 load_dotenv()
 KEEPA_API_KEY = os.getenv("KEEPA_API_KEY")
 
-MODELS_DIR = Path("models")
+MODELS_DIR = Path("src/serving/model")
 THRESHOLD = 0.6
 
 

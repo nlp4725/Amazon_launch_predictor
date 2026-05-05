@@ -11,6 +11,7 @@ Endpoints:
 """
 
 import os
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -49,8 +50,8 @@ def predict_asin(asin: str):
 
 @app.post("/predict/url")
 def predict_url_str(url_str:str):
-    url_str = url_str.removeprefix("https://").removeprefix("http://")
-    char_list=url_str.split('/')
-    asin=char_list[3]
-    check_tokens()
+    match = re.search(r'/dp/([A-Z0-9]{10})', url_str)
+    if not match:
+        raise HTTPException(status_code=400, detail="Could not parse ASIN from URL")
+    asin = match.group(1)
     return predict_from_asin(asin)

@@ -20,7 +20,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 PROCESSED_DIR = Path("data/processed")
-MODELS_DIR = Path("models")
+MODELS_DIR = Path("src/serving/model")
 
 
 # ---------- main functions ----------

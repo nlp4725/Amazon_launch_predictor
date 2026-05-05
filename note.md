@@ -463,7 +463,7 @@ Returns: title, price, cat, seller, predicted_probability, predicted_label
 | `POST /predict/asin` | `asin: str` | product info + prediction |
 | `POST /predict/url` | `url_str: str` | parses ASIN from URL, product info + prediction |
 
-**URL parsing:** strips `https://` then splits by `/` — ASIN is always at position [3] after the protocol is removed.
+**URL parsing:** uses regex `r'/dp/([A-Z0-9]{10})'` to extract the ASIN — works regardless of URL format, no string splitting needed.
 
 **Token check:** Keepa refills at 20 tokens/min. If < 10 tokens, returns HTTP 503 so the user knows to retry later rather than hanging.
 
@@ -486,29 +486,75 @@ Note: typing the URL directly in the browser sends a GET request — endpoints d
 
 ---
 
-#### `evaluate.py`
+### `app.py`
 
-Loads the trained model, computes classification metrics on test data, and saves results.
+Streamlit UI — user-facing frontend that talks to the FastAPI backend.
 
-| Function | In | Out |
-|---|---|---|
-| `evaluate(X_test, y_test, model, models_dir, output_dir)` | test features and labels | dict of metrics + `data/processed/evaluation_results.parquet` |
+**How Streamlit works:**
 
-**Key design decisions:**
-- `model=None` by default — if not passed, loads `lgbm_embedding_model.pkl` from `models_dir`. In production this is how it runs. In tests, a dummy trained model is passed directly so no `.pkl` file is needed.
-- Uses `predict_proba` (not `predict`) for ROC-AUC and PR-AUC — these metrics need probabilities, not hard class predictions.
-- Metrics saved as `evaluation_results.parquet` so results are reproducible and can be compared across runs.
-- Returns the metrics dict so callers (tests, `pipeline.py`) can use the values without re-reading the parquet.
+Streamlit runs top to bottom like a regular Python script. Every time the user interacts (clicks a button, types in a box), the entire script reruns from the top. You build the UI by calling Streamlit functions in order:
 
-**Testing logic (`tests/test_evaluate.py`):**
-- Fixture creates dummy `X_train`, `y_train` (random numpy arrays), trains a real `LGBMClassifier` on them in-memory — no `.pkl` loading needed.
-- Passes the trained model directly to `evaluate()` via `model=` parameter.
-- Passes `output_dir=tmp_path` so parquet saves to a temp folder, not `data/processed/`.
-- Asserts returned dict has the expected keys and all values are between 0 and 1.
+1. **Create the app instance** — `app = FastAPI()` equivalent is just `import streamlit as st`. No explicit app object needed.
+2. **Add a title** — `st.title("Amazon Launch Predictor")`
+3. **Create input boxes** — `st.text_input("ASIN")` renders a text box and returns whatever the user typed
+4. **Add buttons** — `st.button("Predict")` returns `True` only on the run where the user clicked it
+5. **Connect to FastAPI** — inside the button block, call `requests.post(API_URL + "/predict/asin", params={"asin": asin})` — same as any HTTP client
+6. **Display results** — `st.metric()` for prominent numbers, `st.write()` for text
 
+**How to run:**
 ```bash
-pytest tests/test_evaluate.py -v
+# Terminal 1 — backend
+uvicorn main:app --reload
+
+# Terminal 2 — frontend
+streamlit run app.py
 ```
+
+Then open `http://localhost:8501` in your browser.
+
+**User flow:**
+- Paste an ASIN or Amazon product URL into the input boxes
+- Click **Predict** — app calls FastAPI, which calls Keepa, which runs inference
+- Result displayed prominently: launch probability and success/failure label
+- Product title and ASIN shown below
+
+**Session state:**
+
+Because Streamlit reruns the entire script on every interaction, variables reset to their default values each time. `st.session_state` is a dictionary that persists across reruns — values stored there survive the rerun.
+
+```python
+if "clear_count" not in st.session_state:
+    st.session_state.clear_count = 0   # set once, persists across reruns
+```
+
+**Clear button:**
+
+Streamlit does not allow you to directly modify a widget's value after it renders — this crashes with `StreamlitAPIException`. The workaround is to change the widget's `key`. When a key changes, Streamlit treats it as a brand new widget and renders it empty.
+
+Streamlit tracks widget values in a dictionary using the key as the lookup:
+
+```
+# clear_count = 0 → key is "asin_0" → Streamlit finds "B08XYZ123" → shows it in box
+session_state = {"asin_0": "B08XYZ123", "clear_count": 0}
+
+# user clicks Clear → clear_count becomes 1 → key is now "asin_1"
+session_state = {"asin_0": "B08XYZ123", "asin_1": ???, "clear_count": 1}
+#                                         ↑ never seen before → renders empty
+```
+
+`clear_count` is just a number that gets embedded into the key name via f-string:
+- `clear_count = 0` → key `"asin_0"` → Streamlit finds old value → shows it
+- `clear_count = 1` → key `"asin_1"` → Streamlit has never seen this → renders empty
+
+```python
+asin_input = st.text_input("ASIN", key=f"asin_{st.session_state.clear_count}")
+
+if clear_clicked:
+    st.session_state.clear_count += 1  # changes the key on next rerun
+    st.rerun()                         # force rerun immediately so box clears now
+```
+
+`st.rerun()` alone would not work — it reruns with the same `clear_count` so the key stays the same and Streamlit restores the old value. The increment must happen first.
 
 ---
 
@@ -551,7 +597,7 @@ pytest tests/test_evaluate.py -v
 │                    TRAINING PIPELINE                        │
 │                                                             │
 │  train.py                                                   │
-│  features_train.parquet ─────► model.pkl                    │
+│  features_train.parquet ─────► lgbm_tfidf_model.pkl          │
 │  y_train.parquet               (models/)                    │
 │                          │                                  │
 │                          ▼                                  │
@@ -568,9 +614,120 @@ pytest tests/test_evaluate.py -v
 │  inference.py                                               │
 │  new product data ────────────► predicted_probability       │
 │  preprocessor.pkl               predicted_label             │
-│  model.pkl                      (returned, not saved)       │
+│  lgbm_tfidf_model.pkl           (returned, not saved)       │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Step 4: Deployment (Google Cloud Run)
+
+### `requirements.txt`
+
+Generate from code imports only — cleaner than `pip freeze` which dumps everything in the environment:
+
+```bash
+pip install pipreqs
+pipreqs . --force
+```
+
+After generating, make two manual edits:
+1. **Add `uvicorn`** — pipreqs misses it because it's called from the command line, not imported in code. Check version with `pip show uvicorn` and add e.g. `uvicorn==0.46.0`
+2. **Remove `pytest`** — dev-only dependency, not needed in production Docker image
+
+### `Dockerfile`
+
+Containerizes both FastAPI and Streamlit so they run the same way everywhere.
+
+```dockerfile
+FROM python:3.11-slim          # base image — slim keeps it small
+
+WORKDIR /app                   # all commands run from /app inside container
+
+COPY requirements.txt .        # copy deps first so Docker caches this layer
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .                       # copy all project files including src/serving/model/
+
+EXPOSE 8000 8501               # FastAPI on 8000, Streamlit on 8501
+
+# start both servers in one command — & runs FastAPI in background, Streamlit in foreground 0.0.0.0 allows traffic from all route
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 8000 & streamlit run app.py --server.port 8501 --server.address 0.0.0.0"]
+```
+
+Note: Cloud Run only exposes one port per service — deploy two separate Cloud Run services from the same image with different start commands.
+
+### created google cloud project and install google cli 
+
+### Deploy to Google Cloud Run
+
+**Step 1 — Install Google Cloud CLI:**
+```bash
+brew install --cask google-cloud-sdk
+```
+Installs `gcloud` — the command line tool for managing Google Cloud from your terminal.
+
+**Step 2 — Login and configure project:**
+```bash
+gcloud auth login                         # opens browser to log in to your Google account
+gcloud config set project amazon-launch  # tells gcloud which project to use for all commands
+```
+
+**Step 3 — Enable required services:**
+```bash
+gcloud services enable run.googleapis.com containerregistry.googleapis.com cloudbuild.googleapis.com
+```
+- `run.googleapis.com` — Cloud Run — runs your container and serves it publicly
+- `containerregistry.googleapis.com` — Container Registry — stores your Docker images
+- `cloudbuild.googleapis.com` — Cloud Build — builds your Docker image from source code
+
+All three are needed:
+```
+Cloud Build → builds the image → Container Registry stores it → Cloud Run serves it
+```
+
+**Step 3b — Grant Cloud Build storage access:**
+```bash
+gcloud projects add-iam-policy-binding amazon-launch \
+  --member="serviceAccount:{PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.admin"
+```
+Cloud Build needs permission to read/write to Google Cloud Storage to store build artifacts. Replace `{PROJECT_NUMBER}` with your actual project number (find it in `console.cloud.google.com` → project settings, or run `gcloud projects describe amazon-launch`).
+
+**Step 4 — Build and push Docker image:**
+```bash
+gcloud builds submit --tag gcr.io/amazon-launch/amazon-predictor
+```
+Sends your project to Google Cloud Build, builds the Docker image there, and stores it in Container Registry. No need to build locally.
+
+The tag format is `gcr.io/{project-id}/{image-name}`:
+- `amazon-launch` — your Google Cloud project ID
+- `amazon-predictor` — the name you give the image (you choose this, doesn't have to match project ID)
+
+**Step 5 — Deploy FastAPI backend:**
+```bash
+gcloud run deploy amazon-predictor-api \
+  --image gcr.io/amazon-launch/amazon-predictor \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8000
+```
+
+**Step 6 — Deploy Streamlit frontend:**
+```bash
+gcloud run deploy amazon-predictor-ui \
+  --image gcr.io/amazon-launch/amazon-predictor \
+  --platform managed \
+  --allow-unauthenticated \
+  --port 8501
+```
+
+Each deploy gives you a public URL like `https://amazon-predictor-api-xyz.run.app`. Update `API_URL` in `app.py` to point to the FastAPI URL before deploying Streamlit.
+
+**Why Cloud Run over EC2:**
+- No server to manage — scales to zero when not in use (no idle charges)
+- One command to deploy — no SSH, no security groups, no OS updates
+- Free tier: 2 million requests/month
 
 
 
