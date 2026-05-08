@@ -47,6 +47,11 @@ resource "google_project_service" "cloudbuild" {
   disable_on_destroy = false
 }
 
+resource "google_project_service" "secretmanager" {
+  service            = "secretmanager.googleapis.com"
+  disable_on_destroy = false
+}
+
 # Artifact Registry repository
 resource "google_artifact_registry_repository" "repo" {
   location      = var.region
@@ -108,6 +113,23 @@ resource "google_service_account_iam_member" "compute_act_as_self" {
   member             = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
 }
 
+# Secret Manager — stores Keepa API key securely
+# The secret shell is created by Terraform; the actual value is added manually via gcloud (never in code)
+resource "google_secret_manager_secret" "keepa_api_key" {
+  secret_id = "keepa-api-key"
+  replication {
+    auto {}
+  }
+  depends_on = [google_project_service.secretmanager]
+}
+
+# Grant Cloud Run (Compute Engine SA) permission to read the secret
+resource "google_secret_manager_secret_iam_member" "keepa_secret_access" {
+  secret_id = google_secret_manager_secret.keepa_api_key.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
+}
+
 # FastAPI Cloud Run service
 resource "google_cloud_run_v2_service" "fastapi" {
   name     = "fastapi-service"
@@ -123,6 +145,15 @@ resource "google_cloud_run_v2_service" "fastapi" {
         limits = {
           memory = "512Mi"
           cpu    = "1"
+        }
+      }
+      env {
+        name = "KEEPA_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.keepa_api_key.secret_id
+            version = "latest"
+          }
         }
       }
     }
