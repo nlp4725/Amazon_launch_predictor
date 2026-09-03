@@ -3,6 +3,9 @@ Inference: predict launch success for a new product. Two models, different input
 
 TITLE MODEL (xgb_title_model.joblib)
     Input: title only. TF-IDF, 500 unigram+bigram features, then XGBClassifier.
+    Stored as a plain Pipeline over raw text. The original artifact wrapped the
+    vectorizer in a ColumnTransformer, whose private _RemainderColsList was
+    removed in scikit-learn 1.8 and made the pickle unloadable at runtime.
     Scope: Home & Kitchen. Success: review velocity >= 0.056 (~5 reviews in 90 days).
     Entry points: predict_from_title(), predict_from_asin()
 
@@ -60,7 +63,7 @@ def predict_from_title(title: str, models_dir: Path | str = MODELS_DIR) -> dict:
     Out: dict with predicted_probability, predicted_label, model, success_definition
     """
     model = _load(str(models_dir), TITLE_MODEL_FILE)
-    prob = float(model.predict_proba(pd.DataFrame({"title": [title]}))[0, 1])
+    prob = float(model.predict_proba([title])[0, 1])
 
     return {
         "predicted_probability": round(prob, 4),
@@ -78,8 +81,7 @@ def title_vocab_hits(title: str, models_dir: Path | str = MODELS_DIR) -> list[st
     nothing — the 500 terms are learned from Home & Kitchen titles, so a product
     outside that category often matches none of them.
     """
-    pipeline = _load(str(models_dir), TITLE_MODEL_FILE)
-    tfidf = pipeline.named_steps["preprocessing"].named_transformers_["tfidf"]
+    tfidf = _load(str(models_dir), TITLE_MODEL_FILE).named_steps["tfidf"]
     inverse = {index: term for term, index in tfidf.vocabulary_.items()}
     return sorted(inverse[i] for i in tfidf.transform([title]).nonzero()[1])
 
