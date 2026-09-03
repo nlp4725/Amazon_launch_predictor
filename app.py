@@ -16,11 +16,20 @@ import streamlit as st
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
 st.title("Amazon Launch Predictor")
-st.write("Enter an ASIN or Amazon product URL to predict launch success.")
+st.write("Enter a product title, an ASIN, or an Amazon product URL to predict launch success.")
 
 if "clear_count" not in st.session_state:
     st.session_state.clear_count = 0
 
+title_input = st.text_input("Product Title", key=f"title_{st.session_state.clear_count}")
+with st.expander("Optional details (improves accuracy)"):
+    price_input = st.number_input(
+        "Price ($)", min_value=0.0, value=None, step=1.0,
+        key=f"price_{st.session_state.clear_count}",
+    )
+    cat_input = st.text_input("Category", key=f"cat_{st.session_state.clear_count}")
+
+st.markdown("**or look the product up on Amazon** (requires an active Keepa plan)")
 asin_input = st.text_input("ASIN", key=f"asin_{st.session_state.clear_count}")
 url_input = st.text_input("Amazon Product URL", key=f"url_{st.session_state.clear_count}")
 
@@ -33,12 +42,18 @@ if clear_clicked:
     st.rerun()
 
 if predict_clicked:
-    if not asin_input and not url_input:
-        st.error("Please enter an ASIN or a URL.")
+    if not title_input and not asin_input and not url_input:
+        st.error("Please enter a product title, an ASIN, or a URL.")
     else:
-        with st.spinner("Fetching product and predicting..."):
+        with st.spinner("Predicting..."):
             try:
-                if asin_input:
+                if title_input:
+                    resp = requests.post(f"{API_URL}/predict/manual", json={
+                        "title": title_input,
+                        "price": price_input,
+                        "cat": cat_input or None,
+                    })
+                elif asin_input:
                     resp = requests.post(f"{API_URL}/predict/asin", params={"asin": asin_input})
                 else:
                     resp = requests.post(f"{API_URL}/predict/url", params={"url_str": url_input})
@@ -58,7 +73,7 @@ if predict_clicked:
                     # product info below
                     st.markdown("---")
                     st.subheader("Product Info")
-                    st.write(f"**Title:** {data.get('title', 'N/A')}")
+                    st.write(f"**Title:** {data.get('title', title_input or 'N/A')}")
                     st.write(f"**ASIN:** {data.get('asin', asin_input or 'N/A')}")
 
                 else:

@@ -6,7 +6,7 @@ Run with:
 
 Endpoints:
     GET  /                — health check
-    POST /predict/manual  — takes title, price, cat from user
+    POST /predict/manual  — takes title, price, cat from user (no Keepa lookup)
     POST /predict/asin    — takes ASIN, fetches from Keepa, returns prediction
 """
 
@@ -40,6 +40,21 @@ def check_tokens() -> int:
 @app.get("/")
 def root():
     return {"message": "Amazon Launch Predictor API is running"}
+
+
+class ManualProduct(BaseModel):
+    """A product described by the user rather than looked up by ASIN."""
+    title: str
+    price: float | None = None
+    cat: str | None = None
+
+
+@app.post("/predict/manual")
+def predict_manual(product: ManualProduct):
+    """Predict launch success from a title alone. Price and category are optional."""
+    if not product.title.strip():
+        raise HTTPException(status_code=400, detail="Title cannot be empty")
+    return predict(title=product.title, price=product.price, cat=product.cat)
 
 
 @app.post("/predict/asin")
