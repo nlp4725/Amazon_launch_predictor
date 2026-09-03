@@ -15,11 +15,9 @@ import streamlit as st
 
 API_URL = os.getenv("API_URL", "http://localhost:8000")
 
-st.title("Amazon Launch Predictor")
-st.write("Enter a product title, an ASIN, or an Amazon product URL to predict launch success.")
+TITLE_MODE = "Title only — Home & Kitchen"
+DETAILED_MODE = "Title + price + category — 20 categories"
 
-if "clear_count" not in st.session_state:
-    st.session_state.clear_count = 0
 
 @st.cache_data(ttl=3600)
 def fetch_categories():
@@ -29,22 +27,41 @@ def fetch_categories():
     return resp.json()["categories"]
 
 
-try:
-    CATEGORIES = fetch_categories()
-except Exception:
-    CATEGORIES = []
+st.title("Amazon Launch Predictor")
+
+mode = st.radio(
+    "Model",
+    [TITLE_MODE, DETAILED_MODE],
+    captions=[
+        "Predicts ~5 reviews within 90 days. Reads the title and nothing else.",
+        "Predicts more than 10 reviews at 180 days. Price is only used here.",
+    ],
+)
+st.caption(
+    "The two models are trained on different targets — their probabilities are "
+    "not comparable to each other."
+)
+
+if "clear_count" not in st.session_state:
+    st.session_state.clear_count = 0
 
 title_input = st.text_input("Product Title", key=f"title_{st.session_state.clear_count}")
-cat_input = st.selectbox(
-    "Category",
-    CATEGORIES,
-    index=None,
-    placeholder="Select a category…",
-    key=f"cat_{st.session_state.clear_count}",
-)
-with st.expander("Optional details (improves accuracy)"):
+
+cat_input, price_input = None, None
+if mode == DETAILED_MODE:
+    try:
+        categories = fetch_categories()
+    except Exception:
+        categories = []
+    cat_input = st.selectbox(
+        "Category",
+        categories,
+        index=None,
+        placeholder="Select a category…",
+        key=f"cat_{st.session_state.clear_count}",
+    )
     price_input = st.number_input(
-        "Price ($)", min_value=0.0, value=None, step=1.0,
+        "Price ($) — optional", min_value=0.0, value=None, step=1.0,
         key=f"price_{st.session_state.clear_count}",
     )
 
@@ -63,17 +80,19 @@ if clear_clicked:
 if predict_clicked:
     if not title_input and not asin_input and not url_input:
         st.error("Please enter a product title, an ASIN, or a URL.")
-    elif title_input and not cat_input:
-        st.error("Please pick a category — the model needs it to score a title.")
+    elif title_input and mode == DETAILED_MODE and not cat_input:
+        st.error("Please pick a category — this model needs it to score a title.")
     else:
         with st.spinner("Predicting..."):
             try:
-                if title_input:
-                    resp = requests.post(f"{API_URL}/predict/manual", json={
+                if title_input and mode == DETAILED_MODE:
+                    resp = requests.post(f"{API_URL}/predict/detailed", json={
                         "title": title_input,
-                        "price": price_input,
                         "cat": cat_input,
+                        "price": price_input,
                     })
+                elif title_input:
+                    resp = requests.post(f"{API_URL}/predict/title", json={"title": title_input})
                 elif asin_input:
                     resp = requests.post(f"{API_URL}/predict/asin", params={"asin": asin_input})
                 else:
@@ -90,6 +109,10 @@ if predict_clicked:
                     with col2:
                         label = "Success" if data["predicted_label"] == 1 else "Failure"
                         st.metric("Prediction", label)
+                    st.caption(
+                        f"Model: `{data.get('model', 'n/a')}` — success means "
+                        f"{data.get('success_definition', 'n/a')}."
+                    )
 
                     # product info below
                     st.markdown("---")
