@@ -21,13 +21,32 @@ st.write("Enter a product title, an ASIN, or an Amazon product URL to predict la
 if "clear_count" not in st.session_state:
     st.session_state.clear_count = 0
 
+@st.cache_data(ttl=3600)
+def fetch_categories():
+    """Category list comes from the fitted model, so the dropdown can't drift out of sync."""
+    resp = requests.get(f"{API_URL}/categories", timeout=30)
+    resp.raise_for_status()
+    return resp.json()["categories"]
+
+
+try:
+    CATEGORIES = fetch_categories()
+except Exception:
+    CATEGORIES = []
+
 title_input = st.text_input("Product Title", key=f"title_{st.session_state.clear_count}")
+cat_input = st.selectbox(
+    "Category",
+    CATEGORIES,
+    index=None,
+    placeholder="Select a category…",
+    key=f"cat_{st.session_state.clear_count}",
+)
 with st.expander("Optional details (improves accuracy)"):
     price_input = st.number_input(
         "Price ($)", min_value=0.0, value=None, step=1.0,
         key=f"price_{st.session_state.clear_count}",
     )
-    cat_input = st.text_input("Category", key=f"cat_{st.session_state.clear_count}")
 
 st.markdown("**or look the product up on Amazon** (requires an active Keepa plan)")
 asin_input = st.text_input("ASIN", key=f"asin_{st.session_state.clear_count}")
@@ -44,6 +63,8 @@ if clear_clicked:
 if predict_clicked:
     if not title_input and not asin_input and not url_input:
         st.error("Please enter a product title, an ASIN, or a URL.")
+    elif title_input and not cat_input:
+        st.error("Please pick a category — the model needs it to score a title.")
     else:
         with st.spinner("Predicting..."):
             try:
@@ -51,7 +72,7 @@ if predict_clicked:
                     resp = requests.post(f"{API_URL}/predict/manual", json={
                         "title": title_input,
                         "price": price_input,
-                        "cat": cat_input or None,
+                        "cat": cat_input,
                     })
                 elif asin_input:
                     resp = requests.post(f"{API_URL}/predict/asin", params={"asin": asin_input})
@@ -75,6 +96,12 @@ if predict_clicked:
                     st.subheader("Product Info")
                     st.write(f"**Title:** {data.get('title', title_input or 'N/A')}")
                     st.write(f"**ASIN:** {data.get('asin', asin_input or 'N/A')}")
+
+                    if data.get("warning"):
+                        st.warning(data["warning"])
+                    elif data.get("title_terms_matched"):
+                        terms = ", ".join(data["title_terms_matched"])
+                        st.caption(f"Title terms the model recognised: {terms}")
 
                 else:
                     try:

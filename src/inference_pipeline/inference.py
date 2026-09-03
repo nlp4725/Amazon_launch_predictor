@@ -2,6 +2,7 @@
 Inference: predict launch success for a new product from user inputs or ASIN.
 
 - predict(): takes title, price, cat directly from the user
+- known_categories() / title_vocab_hits(): what the fitted preprocessor actually recognises
 - predict_from_asin(): queries Keepa for the ASIN, extracts fields, calls predict()
 - Defaults seller to "unknown" and month/year to today (new launch)
 - Loads fitted preprocessor.pkl and lgbm_tfidf_model.pkl from models/
@@ -10,6 +11,7 @@ Inference: predict launch success for a new product from user inputs or ASIN.
 
 import os
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +24,42 @@ KEEPA_API_KEY = os.getenv("KEEPA_API_KEY")
 
 MODELS_DIR = Path("src/serving/model")
 THRESHOLD = 0.6
+
+
+@lru_cache(maxsize=None)
+def _fitted_preprocessor(models_dir: str):
+    """Cached load of preprocessor.pkl — the introspection helpers below hit it per request."""
+    return load(Path(models_dir) / "preprocessor.pkl")
+
+
+def _step(models_dir: str | Path, name: str):
+    transformers = {n: t for n, t, _ in _fitted_preprocessor(str(models_dir)).transformers_}
+    return transformers[name]
+
+
+def known_categories(models_dir: Path | str = MODELS_DIR) -> list[str]:
+    """
+    The category values the fitted encoder recognises.
+
+    Out: sorted list of category names, excluding the "unknown" imputation bucket.
+    Anything not in this list one-hots to all zeros (handle_unknown="ignore"), so the
+    model silently ignores it rather than raising.
+    """
+    encoder = _step(models_dir, "cat").named_steps["encoder"]
+    return sorted(c for c in encoder.categories_[0] if c != "unknown")
+
+
+def title_vocab_hits(title: str, models_dir: Path | str = MODELS_DIR) -> list[str]:
+    """
+    The TF-IDF vocabulary terms a title matches.
+
+    Out: sorted list of matched terms. An empty list means the title contributes
+    nothing to the prediction — the vocabulary is capped at 200 terms, so most
+    words fall outside it and the model is left reading price and category alone.
+    """
+    tfidf = _step(models_dir, "tfidf")
+    inverse = {index: term for term, index in tfidf.vocabulary_.items()}
+    return sorted(inverse[i] for i in tfidf.transform([title]).nonzero()[1])
 
 
 def predict(
